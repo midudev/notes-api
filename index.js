@@ -1,65 +1,88 @@
+require('dotenv').config()
+require('./mongo')
+
+const Sentry = require('@sentry/node')
+const Tracing = require('@sentry/tracing')
 const express = require('express')
 const app = express()
 const cors = require('cors')
+const Note = require('./models/Note')
+const notFound = require('./middleware/notFound.js')
+const handleErrors = require('./middleware/handleErrors.js')
 
 app.use(cors())
 app.use(express.json())
+app.use('/images', express.static('images'))
 
-let notes = [
-  {
-    id: 1,
-    content: 'Me tengo que suscribir a @midudev en YouTube',
-    date: '2019-05-30T17:30:31.098Z',
-    important: true
-  },
-  {
-    id: 2,
-    content: 'Tengo que estudiar las clases del FullStack Bootcamp',
-    date: '2019-05-30T18:39:34.091Z',
-    important: false
-  },
-  {
-    id: 3,
-    content: 'Repasar los retos de JS de midudev',
-    date: '2019-05-30T19:20:14.298Z',
-    important: true
-  }
-]
+Sentry.init({
+  dsn: 'https://ac034ebd99274911a8234148642e044c@o537348.ingest.sentry.io/5655435',
+  integrations: [
+    // enable HTTP calls tracing
+    new Sentry.Integrations.Http({ tracing: true }),
+    // enable Express.js middleware tracing
+    new Tracing.Integrations.Express({ app })
+  ],
 
-const generateId = () => {
-  const notesIds = notes.map(n => n.id)
-  const maxId = notesIds.length ? Math.max(...notesIds) : 0
-  const newId = maxId + 1
-  return newId
-}
+  // We recommend adjusting this value in production, or using tracesSampler
+  // for finer control
+  tracesSampleRate: 1.0
+})
+
+// RequestHandler creates a separate execution context using domains, so that every
+// transaction/span/breadcrumb is attached to its own Hub instance
+app.use(Sentry.Handlers.requestHandler())
+// TracingHandler creates a trace for every incoming request
+app.use(Sentry.Handlers.tracingHandler())
 
 app.get('/', (request, response) => {
+  console.log(request.ip)
+  console.log(request.ips)
+  console.log(request.originalUrl)
   response.send('<h1>Hello World!</h1>')
 })
 
 app.get('/api/notes', (request, response) => {
-  response.json(notes)
+  Note.find({}).then(notes => {
+    response.json(notes)
+  })
 })
 
-app.get('/api/notes/:id', (request, response) => {
-  const id = Number(request.params.id)
-  const note = notes.find(note => note.id === id)
+app.get('/api/notes/:id', (request, response, next) => {
+  const { id } = request.params
 
-  if (note) {
-    return response.json(note)
-  } else {
-    response.status(404).end()
+  Note.findById(id)
+    .then(note => {
+      if (note) return response.json(note)
+      response.status(404).end()
+    })
+    .catch(err => next(err))
+})
+
+app.put('/api/notes/:id', (request, response, next) => {
+  const { id } = request.params
+  const note = request.body
+
+  const newNoteInfo = {
+    content: note.content,
+    important: note.important
   }
+
+  Note.findByIdAndUpdate(id, newNoteInfo, { new: true })
+    .then(result => {
+      response.json(result)
+    })
+    .catch(next)
 })
 
-app.delete('/api/notes/:id', (request, response) => {
-  const id = Number(request.params.id)
-  notes = notes.filter(note => note.id !== id)
+app.delete('/api/notes/:id', (request, response, next) => {
+  const { id } = request.params
 
-  response.status(204).end()
+  Note.findByIdAndDelete(id)
+    .then(() => response.status(204).end())
+    .catch(next)
 })
 
-app.post('/api/notes', (request, response) => {
+app.post('/api/notes', (request, response, next) => {
   const note = request.body
 
   if (!note.content) {
@@ -68,17 +91,21 @@ app.post('/api/notes', (request, response) => {
     })
   }
 
-  const newNote = {
-    id: generateId(),
+  const newNote = new Note({
     content: note.content,
     date: new Date(),
-    import: note.important || false
-  }
+    important: note.important || false
+  })
 
-  notes = notes.concat(newNote)
-
-  response.json(note)
+  newNote.save().then(savedNote => {
+    response.json(savedNote)
+  }).catch(err => next(err))
 })
+
+app.use(notFound)
+
+app.use(Sentry.Handlers.errorHandler())
+app.use(handleErrors)
 
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => {
