@@ -24,6 +24,7 @@ mongoose.connect(connectionString, {
     console.error(err)
   })
 
-process.on('uncaughtException', () => {
-  mongoose.connection.disconnect()
+process.on('uncaughtException', error => {
+  console.error(error)
+  mongoose.disconnect()
 })
